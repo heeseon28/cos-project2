@@ -1,3 +1,4 @@
+# Edge와 AI 모듈 사이의 통신을 담당 -> 통역사 느낌. 이를 실행하기 위해 vpn을 사용해야함.
 import socket
 import requests
 import threading
@@ -6,46 +7,62 @@ import logging
 import json
 import sys
 
-OPCODE_DATA = 1
-OPCODE_WAIT = 2
-OPCODE_DONE = 3
-OPCODE_QUIT = 4
+# 이 부분은 opcode.h에 정의된 opcode와 일치해야 함.
+OPCODE_DATA = 1  # edge device가 데이터를 보고할 때 사용되는 opcode
+OPCODE_WAIT = 2  # edge device가 데이터를 모두 보고한 후, AI module이 모델을 학습하는 동안 edge device가 대기해야 할 때 사용되는 opcode
+OPCODE_DONE = 3  # 다음 데이터를 보고할 준비가 되었음을 알리는 opcode
+OPCODE_QUIT = 4  # 전체 종료
+
 
 class Server:
-    def __init__(self, name, algorithm, dimension, index, port, caddr, cport, ntrain, ntest):
-        logging.info("[*] Initializing the server module to receive data from the edge device")
-        self.name = name
-        self.algorithm = algorithm
-        self.dimension = dimension
-        self.index = index
-        self.caddr = caddr
-        self.cport = cport
-        self.ntrain = ntrain
-        self.ntest = ntest
-        success = self.connecter()
+    def __init__(
+        self, name, algorithm, dimension, index, port, caddr, cport, ntrain, ntest
+    ):
+        logging.info(
+            "[*] Initializing the server module to receive data from the edge device"
+        )
+        self.name = name  # 모델의 이름. AI module이 여러 모델을 지원하는 경우, 모델을 구분하기 위해 사용됨
+        self.algorithm = algorithm  # 우린 lstm을 사용하니까 lstm으로 고정
+        self.dimension = dimension  # feature의 차원. 예시에서는 4로 고정되어 있지만, 실제로는 유동적일 수 있음
+        self.index = index  # power value의 index. 예시에서는 0으로 고정되어 있지만, 실제로는 유동적일 수 있음
+        self.caddr = caddr  # AI module의 IP 주소
+        self.cport = cport  # AI module의 포트 번호
+        self.ntrain = ntrain  # AI가 학습하는 training instance의 개수
+        self.ntest = ntest  # AI가 예측하는 testing instance의 개수
+        success = (
+            self.connecter()
+        )  # AI module과의 연결을 시도. 연결에 실패하면, 서버는 종료됨
 
-        if success:
+        if (
+            success
+        ):  # 성공시 edge device와의 통신을 위해 소켓을 생성하고, edge device의 요청을 처리하기 시작함
             self.port = port
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.bind(("0.0.0.0", port))
             self.socket.listen(10)
             self.listener()
 
-    def connecter(self):
+    def connecter(self):  # AI module에 모델 생성을 요청하는 함수
         success = True
         self.ai = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.ai.connect((self.caddr, self.cport))
         url = "http://{}:{}/{}".format(self.caddr, self.cport, self.name)
+        # AI module에 모델 생성을 요청하기 위해, 모델의 이름, 알고리즘, feature의 차원, power value의 index를 AI module에 전달해야 함.
+        """
+        예를 들어 옵션이 --caddr 127.0.0.1 --cport 5556 --name local_test 였다면
+        url은 http://127.0.0.1:5556/local_test 가 될 것임. 그리고 AI module에 전달되는 json 객체는 다음과 같음:
+        """
         request = {}
-        request['algorithm'] = self.algorithm
-        request['dimension'] = self.dimension
-        request['index'] = self.index
+        request["algorithm"] = self.algorithm  # LSTM
+        request["dimension"] = self.dimension  # feature의 차원
+        request["index"] = self.index  # power value의 index
         js = json.dumps(request)
         logging.debug("[*] To be sent to the AI module: {}".format(js))
-        result = requests.post(url, json=js)
+        result = requests.post(url, json=js)  # AI module에 요청을 보내서 모델을 생성.
         response = json.loads(result.content)
         logging.debug("[*] Received: {}".format(response))
 
+        # AI module이 모델 생성을 성공적으로 수행했는지 확인. 실패한 경우, 서버는 종료됨.
         if "opcode" not in response:
             logging.debug("[*] Invalid response")
             success = False
@@ -63,23 +80,28 @@ class Server:
                 logging.info("[*] Successfully connected to the AI module")
         return success
 
-    def listener(self):
+    def listener(self):  # edge의 요청을 처리. 접속할 때까지 기다리는 함수임.
         logging.info("[*] Server is listening on 0.0.0.0:{}".format(self.port))
 
         while True:
             client, info = self.socket.accept()
-            logging.info("[*] Server accept the connection from {}:{}".format(info[0], info[1]))
+            logging.info(
+                "[*] Server accept the connection from {}:{}".format(info[0], info[1])
+            )
 
             client_handle = threading.Thread(target=self.handler, args=(client,))
             client_handle.start()
 
+    # edge에서 받은 데이터를 AI module에 전달.
     def send_instance(self, vlst, is_training):
-        if is_training:
+        if (
+            is_training
+        ):  # training instance인지 testing instance인지에 따라, 데이터를 전달할 url이 달라짐.
             url = "http://{}:{}/{}/training".format(self.caddr, self.cport, self.name)
         else:
             url = "http://{}:{}/{}/testing".format(self.caddr, self.cport, self.name)
         data = {}
-        data["value"] = vlst
+        data["value"] = vlst  # 보낼 feature들의 리스트
         req = json.dumps(data)
         response = requests.put(url, json=req)
         resp = response.json()
@@ -97,6 +119,8 @@ class Server:
             logging.error("unknown response")
             sys.exit(1)
 
+    # edge에서 받은 데이터를 python 정수형 데이터로 변환해서 전달하는 함수.
+    # 수정점. 실제로 할 땐 데이터의 형식이 다를 수 있기 때문에, 이 부분은 실제 데이터의 형식에 맞게 수정해야 함.
     def parse_data(self, buf, is_training):
         temp = int.from_bytes(buf[0:1], byteorder="big", signed=True)
         humid = int.from_bytes(buf[1:2], byteorder="big", signed=True)
@@ -108,9 +132,9 @@ class Server:
 
         self.send_instance(lst, is_training)
 
-
     # TODO: You should implement your own protocol in this function
     # The following implementation is just a simple example
+    # 가장 중요함. edge에서 받은 데이터를 바탕으로 traing과 testing의 흐름을 관리.
     def handler(self, client):
         logging.info("[*] Server starts to process the client's request")
 
@@ -118,14 +142,16 @@ class Server:
         url = "http://{}:{}/{}/training".format(self.caddr, self.cport, self.name)
 
         while True:
-            # opcode (1 byte): 
+            # opcode (1 byte):
             rbuf = client.recv(1)
-            opcode = int.from_bytes(rbuf, "big")
+            opcode = int.from_bytes(rbuf, "big")  # edge가 보낸 opcode를 정수형으로 변환
             logging.debug("[*] opcode: {}".format(opcode))
 
-            if opcode == OPCODE_DATA:
+            if opcode == OPCODE_DATA:  # 잘 수행되었으면 OPCODE_DATA = 1을 받아야함.
                 logging.info("[*] data report from the edge")
-                rbuf = client.recv(5)
+                rbuf = client.recv(
+                    5
+                )  # 수정점. 실제 데이터의 형식에 맞게 수정해야 함. 예시에서는 5바이트로 고정되어 있지만, 실제로는 유동적일 수 있음.
                 logging.debug("[*] received buf: {}".format(rbuf))
                 self.parse_data(rbuf, True)
             else:
@@ -133,8 +159,9 @@ class Server:
                 logging.error("[*] please try again")
                 sys.exit(1)
 
-            ntrain -= 1
+            ntrain -= 1  # 받은 training instance의 개수를 하나 줄임.
 
+            # training instance를 모두 받은 경우, AI module이 모델을 학습하는 동안 edge device가 대기해야 하므로, OPCODE_WAIT = 2를 보냄.
             if ntrain > 0:
                 opcode = OPCODE_DONE
                 logging.debug("[*] send the opcode OPCODE_DONE")
@@ -148,22 +175,24 @@ class Server:
         result = requests.post(url)
         response = json.loads(result.content)
         logging.debug("[*] return: {}".format(response["opcode"]))
-    
+
         ntest = self.ntest
         url = "http://{}:{}/{}/testing".format(self.caddr, self.cport, self.name)
         opcode = OPCODE_DONE
         logging.debug("[*] send the opcode OPCODE_DONE")
+        # training instance를 모두 받은 후, testing instance를 보낼 준비가 되었음을 알리는 opcode OPCODE_DONE = 3를 보냄.
         client.send(int.to_bytes(opcode, 1, "big"))
 
+        # training과 거의 유사하나, training이 끝난 후 AI module이 모델을 학습하는 동안 edge device가 대기해야 하는 반면, testing은 AI module이 예측을 수행하는 동안 edge device가 대기할 필요가 없음. 따라서 testing에서는 OPCODE_DONE = 3를 보냄.
         while ntest > 0:
-            # opcode (1 byte): 
+            # opcode (1 byte):
             rbuf = client.recv(1)
             opcode = int.from_bytes(rbuf, "big")
             logging.debug("[*] opcode: {}".format(opcode))
 
             if opcode == OPCODE_DATA:
                 logging.info("[*] data report from the edge")
-                rbuf = client.recv(5)
+                rbuf = client.recv(5)  # 수정점.
                 logging.debug("[*] received buf: {}".format(rbuf))
                 self.parse_data(rbuf, False)
             else:
@@ -181,6 +210,7 @@ class Server:
                 client.send(int.to_bytes(opcode, 1, "big"))
                 break
 
+        # result를 AI module에서 받아서 출력하는 함수. AI module이 예측을 수행한 후, edge device가 결과를 요청할 때 호출됨.
         url = "http://{}:{}/{}/result".format(self.caddr, self.cport, self.name)
         result = requests.get(url)
         response = json.loads(result.content)
@@ -203,6 +233,7 @@ class Server:
                 logging.error("please try again")
                 sys.exit(1)
 
+    # AI module에서 받아온 예측 결과를 출력하는 함수. AI module이 예측을 수행한 후, edge device가 결과를 요청할 때 호출됨.
     def print_result(self, result):
         logging.info("=== Result of Prediction ({}) ===".format(self.name))
         logging.info("   # of instances: {}".format(result["num"]))
@@ -212,30 +243,117 @@ class Server:
         logging.info("   incorrect predictions: {}".format(result["incorrect"]))
         logging.info("   accuracy: {}\%".format(result["accuracy"]))
 
+
+# 터미널에서 입력한 옵션들을 처리하는 함수들.
+# 예시 : python3 server.py --algorithm lstm --dimension 4 --index 2 --ntrain 10 --ntest 7 --name local_test2 --caddr 127.0.0.1 --cport 5556 --lport 5555 --log DEBUG
 def command_line_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-a", "--algorithm", metavar="<AI algorithm to be used>", help="AI algorithm to be used", type=str, required=True)
-    parser.add_argument("-d", "--dimension", metavar="<Dimension of each instance>", help="Dimension of each instance", type=int, default=1)
-    parser.add_argument("-b", "--caddr", metavar="<AI module's IP address>", help="AI module's IP address", type=str, required=True)
-    parser.add_argument("-c", "--cport", metavar="<AI module's listening port>", help="AI module's listening port", type=int, required=True)
-    parser.add_argument("-p", "--lport", metavar="<server's listening port>", help="Server's listening port", type=int, required=True)
-    parser.add_argument("-n", "--name", metavar="<model name>", help="Name of the model", type=str, default="model")
-    parser.add_argument("-x", "--ntrain", metavar="<number of instances for training>", help="Number of instances for training", type=int, default=10)
-    parser.add_argument("-y", "--ntest", metavar="<number of instances for testing>", help="Number of instances for testing", type=int, default=10)
-    parser.add_argument("-z", "--index", metavar="<the index number for the power value>", help="Index number for the power value", type=int, default=0)
-    parser.add_argument("-l", "--log", metavar="<log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)>", help="Log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)", type=str, default="INFO")
+    parser.add_argument(
+        "-a",
+        "--algorithm",
+        metavar="<AI algorithm to be used>",
+        help="AI algorithm to be used",
+        type=str,
+        required=True,
+    )
+    parser.add_argument(
+        "-d",
+        "--dimension",
+        metavar="<Dimension of each instance>",
+        help="Dimension of each instance",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "-b",
+        "--caddr",
+        metavar="<AI module's IP address>",
+        help="AI module's IP address",
+        type=str,
+        required=True,
+    )
+    parser.add_argument(
+        "-c",
+        "--cport",
+        metavar="<AI module's listening port>",
+        help="AI module's listening port",
+        type=int,
+        required=True,
+    )
+    parser.add_argument(
+        "-p",
+        "--lport",
+        metavar="<server's listening port>",
+        help="Server's listening port",
+        type=int,
+        required=True,
+    )
+    parser.add_argument(
+        "-n",
+        "--name",
+        metavar="<model name>",
+        help="Name of the model",
+        type=str,
+        default="model",
+    )
+    parser.add_argument(
+        "-x",
+        "--ntrain",
+        metavar="<number of instances for training>",
+        help="Number of instances for training",
+        type=int,
+        default=10,
+    )
+    parser.add_argument(
+        "-y",
+        "--ntest",
+        metavar="<number of instances for testing>",
+        help="Number of instances for testing",
+        type=int,
+        default=10,
+    )
+    parser.add_argument(
+        "-z",
+        "--index",
+        metavar="<the index number for the power value>",
+        help="Index number for the power value",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "-l",
+        "--log",
+        metavar="<log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)>",
+        help="Log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)",
+        type=str,
+        default="INFO",
+    )
     args = parser.parse_args()
     return args
+
 
 def main():
     args = command_line_args()
     logging.basicConfig(level=args.log)
 
     if args.ntrain <= 0 or args.ntest <= 0:
-        logging.error("Number of instances for training or testing should be larger than 0")
+        logging.error(
+            "Number of instances for training or testing should be larger than 0"
+        )
         sys.exit(1)
 
-    Server(args.name, args.algorithm, args.dimension, args.index, args.lport, args.caddr, args.cport, args.ntrain, args.ntest)
+    Server(
+        args.name,
+        args.algorithm,
+        args.dimension,
+        args.index,
+        args.lport,
+        args.caddr,
+        args.cport,
+        args.ntrain,
+        args.ntest,
+    )
+
 
 if __name__ == "__main__":
     main()

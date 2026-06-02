@@ -4,7 +4,7 @@
 #include <ctime>
 using namespace std;
 
-Edge::Edge() 
+Edge::Edge()
 {
   this->dr = new DataReceiver();
   this->nm = new NetworkManager();
@@ -43,15 +43,16 @@ void Edge::run()
 
   cout << "[*] Running the edge device" << endl;
 
-  curr = 1609459200;
+  curr = 1609459200; // 2016-01-01 00:00:00
   while (opcode != OPCODE_QUIT)
   {
     ds = this->dr->getDataSet(curr);
     data = this->pm->processData(ds, &dlen);
+    // DataSet -> ProcessManager -> agregation된 데이터를 byte 형태로 변환 -> NetworkManager -> 서버로 전송
     this->nm->sendData(data, dlen);
     opcode = this->nm->receiveCommand();
 
-    curr += 86400;
+    curr += 86400; // 하루를 의미
   }
 
   cout << "[*] End running" << endl;
