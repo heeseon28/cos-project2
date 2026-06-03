@@ -17,7 +17,7 @@ void ProcessManager::init()
 {
 }
 
-// TODO: You should implement this function if you want to change the result of the aggregation
+// Modified 2026-06-03: aggregation changed to [avg_power, max_temp, min_temp, avg_humid, month].
 uint8_t *ProcessManager::processData(DataSet *ds, int *dlen)
 // *ds : 하루치 데이터 묶음, dlen: 네트워크 매니저로 보낼 데이터의 길이, 반환값: 네트워크 매니저로 보낼 데이터 (byte 형태)
 {
@@ -30,7 +30,8 @@ uint8_t *ProcessManager::processData(DataSet *ds, int *dlen)
   PowerData *pdata;       // 데이터셋에 포함된 전력 데이터
   char buf[BUFLEN];       // 네트워크 매니저로 보낼 데이터를 저장하는 버퍼 (byte 형태)
   ret = (uint8_t *)malloc(BUFLEN);
-  int tmp, min_humid, min_temp, min_power, month; // 수정점 1
+  int tmp, avg_power, max_temp, min_temp, avg_humid, month; // Modified 2026-06-03: 5-feature vector variables
+  long long sum_power;
   time_t ts;
   struct tm *tm;
 
@@ -38,30 +39,27 @@ uint8_t *ProcessManager::processData(DataSet *ds, int *dlen)
   hdata = ds->getHumidityData();    // 데이터셋에서 습도 데이터를 가져옴
   num = ds->getNumHouseData();      // 데이터셋에 포함된 HouseData의 개수를 가져옴
 
-  // line 41~62 : 수정점 2
-  // Example) I will give the minimum daily temperature (1 byte), the minimum daily humidity (1 byte),
-  // the minimum power data (2 bytes), the month value (1 byte) to the network manager
-  //  ㄴ> 네트워크 매니저로 보낼 데이터는 하루치 데이터에서 최소 온도, 최소 습도, 최소 전력 데이터 (2바이트), 월 값을 포함하는 5바이트의 데이터. 이것이 현재 aggregation의 설계
+  // Modified 2026-06-03: feature vector = [avg_power, max_temp, min_temp, avg_humid, month]
+  // Aggregation types: average(power), max(temperature), min(temperature), average(humidity), month(time feature)
 
-  // Example) getting the minimum daily temperature -> 온도 데이터로부터 최소 온도를 구하는 예시
-  min_temp = (int)tdata->getMin(); // feature 1
-
-  // Example) getting the minimum daily humidity -> 습도 데이터로부터 최소 습도를 구하는 예시
-  min_humid = (int)hdata->getMin(); // feature 2
-
-  // Example) getting the minimum power value -> 전력 데이터로부터 최소 전력 데이터를 구하는 예시
-  min_power = 10000; // feature 3, 초기값은 충분히 큰 값으로 설정 (예: 10000), 2바이트임. 왜? 최댓값은 65535이므로
+  sum_power = 0;
+  ds->setIterator();
   for (int i = 0; i < num; i++)
   {
-    house = ds->getHouseData(i);
+    house = ds->getNextHouseData();
+    if (!house)
+      break;
+
     pdata = house->getPowerData();
-    tmp = (int)pdata->getValue();
+    sum_power += (int)pdata->getValue();
+  }
+  avg_power = (num > 0) ? (int)(sum_power / num) : 0; // feature 1: average power value among houses
 
-    if (tmp < min_power)
-      min_power = tmp;
-  } // 전력값 중 최솟값을 찾는 반복문
+  max_temp = (int)tdata->getMax();    // feature 2: maximum daily temperature
+  min_temp = (int)tdata->getMin();    // feature 3: minimum daily temperature
+  avg_humid = (int)hdata->getValue(); // feature 4: average daily humidity
 
-  // Example) getting the month value from the timestamp -> 데이터셋의 timestamp로부터 월 값을 구하는 예시
+  // Feature 5: getting the month value from the timestamp
   ts = ds->getTimestamp();
   tm = localtime(&ts);
   month = tm->tm_mon + 1; // tm_mon의 범위는 0~11이므로 1을 더해서 1~12로 만듦
@@ -72,33 +70,34 @@ uint8_t *ProcessManager::processData(DataSet *ds, int *dlen)
   *dlen = 0; // 길이를 알아야 네트워크 매니저로 보낼 때 정확한 길이만큼 보내므로, dlen을 0으로 초기화
   p = ret;
 
-  // line 75~84 : 수정점 3
-  // Example) saving the values in the memory -> 그리고 하나씩 길이를 더해서 정확한 길이를 기록
-  VAR_TO_MEM_1BYTE_BIG_ENDIAN(min_temp, p);
-  *dlen += 1;
-  VAR_TO_MEM_1BYTE_BIG_ENDIAN(min_humid, p);
-  *dlen += 1;
-  VAR_TO_MEM_2BYTES_BIG_ENDIAN(min_power, p);
-  *dlen += 2;
-  VAR_TO_MEM_1BYTE_BIG_ENDIAN(month, p);
-  *dlen += 1;
+  // Modified 2026-06-03: save five features as 4-byte signed big-endian integers.
+  // payload = avg_power(4) || max_temp(4) || min_temp(4) || avg_humid(4) || month(4) = 20 bytes
+  VAR_TO_MEM_4BYTES_BIG_ENDIAN(avg_power, p);
+  *dlen += 4;
+  VAR_TO_MEM_4BYTES_BIG_ENDIAN(max_temp, p);
+  *dlen += 4;
+  VAR_TO_MEM_4BYTES_BIG_ENDIAN(min_temp, p);
+  *dlen += 4;
+  VAR_TO_MEM_4BYTES_BIG_ENDIAN(avg_humid, p);
+  *dlen += 4;
+  VAR_TO_MEM_4BYTES_BIG_ENDIAN(month, p);
+  *dlen += 4;
 
   return ret; // 네트워크 매니저로 보낼 데이터가 저장된 버퍼의 포인터를 반환
 }
 
 /*
+Modified 2026-06-03 summary
 1. DataSet에서 온도 데이터 가져오기
 2. DataSet에서 습도 데이터 가져오기
 3. DataSet 안의 집 개수 가져오기
-4. 하루 최저 온도 계산
-5. 하루 최저 습도 계산
-6. 모든 집을 순회하면서 최저 전력 계산
-7. timestamp에서 month 계산
-8. payload buffer 초기화
-9. min_temp 1 byte 저장
-10. min_humid 1 byte 저장
-11. min_power 2 bytes 저장
-12. month 1 byte 저장
-13. 총 길이 dlen = 5로 설정
-14. buffer 반환
+4. 모든 집을 순회하면서 평균 전력 avg_power 계산
+5. 하루 최고 온도 max_temp 계산
+6. 하루 최저 온도 min_temp 계산
+7. 하루 평균 습도 avg_humid 계산
+8. timestamp에서 month 계산
+9. payload buffer 초기화
+10. avg_power, max_temp, min_temp, avg_humid, month를 각각 4 bytes로 저장
+11. 총 길이 dlen = 20으로 설정
+12. buffer 반환
 */
