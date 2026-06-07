@@ -4,7 +4,6 @@
 #include <string>
 #include <ctime>
 #include "power_data.h"
-#include "house_data.h"
 #include "info.h"
 using namespace std;
 

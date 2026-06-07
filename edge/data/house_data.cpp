@@ -6,12 +6,14 @@ HouseData::HouseData(Info *info)
 {
   this->info = info;
   this->data = NULL;
+  this->next = NULL;
 }
 
 HouseData::HouseData(Info *info, PowerData *power)
 {
   this->info = info;
   this->data = power;
+  this->next = NULL;
 }
 
 void HouseData::setInfo(Info *info)
