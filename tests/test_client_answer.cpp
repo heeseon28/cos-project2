@@ -140,7 +140,8 @@ void protocol_execution(int sock)
   while (offset < tbs)
   {
     // write()가 한 번에 모든 데이터를 보낸다는 보장이 없으므로 남은 바이트만큼 반복 전송
-    sent = write(sock, &len + offset, tbs - offset);
+    // Cast &len to char* so offset moves by bytes, not by sizeof(int).
+    sent = write(sock, ((char *)&len) + offset, tbs - offset);
     if (sent > 0)
       offset += sent;
   }
@@ -170,7 +171,8 @@ void protocol_execution(int sock)
   while (offset < tbr)
   {
     // read() 역시 한 번에 모든 데이터를 받는다는 보장이 없으므로 4바이트를 모두 받을 때까지 반복
-	  rcvd = read(sock, &len + offset, tbr - offset);
+    // Cast &len to char* so offset moves one byte at a time.
+	  rcvd = read(sock, ((char *)&len) + offset, tbr - offset);
     if (rcvd > 0)
       offset += rcvd;
   }
@@ -180,6 +182,7 @@ void protocol_execution(int sock)
 
   // Receive the name (Bob)
   // 앞에서 받은 길이만큼 Bob의 이름 문자열을 수신
+  memset(buf, 0, BUFLEN);
   tbr = len;
   // 문자열 수신을 위해 offset을 다시 초기화
   offset = 0;
@@ -215,7 +218,8 @@ void protocol_execution(int sock)
   arg2 = 5;
 
   // 서버가 요청 종류를 구분할 수 있도록 덧셈 요청 opcode를 패킷의 첫 부분에 저장한다.
-  VAR_TO_MEM_1BYTE_BIG_ENDIAN(OPCODE_SUM, p);
+  // 이 test protocol은 opcode도 4 bytes로 약속했으므로 arg1/arg2와 동일하게 4 bytes Big Endian으로 저장한다.
+  VAR_TO_MEM_4BYTES_BIG_ENDIAN(OPCODE_SUM, p);
   // 첫 번째 정수 인자를 Big Endian 형식으로 버퍼에 저장
   VAR_TO_MEM_4BYTES_BIG_ENDIAN(arg1, p);
   // 두 번째 정수 인자를 Big Endian 형식으로 버퍼에 저장
@@ -254,7 +258,8 @@ void protocol_execution(int sock)
   while (offset < tbr)
   {
     // 서버의 응답 패킷을 8바이트 모두 받을 때까지 반복해서 수신
-    rcvd = read(sock, buf + offset, tbs - offset);
+    // Receiving uses tbr, not tbs, because tbr is the expected response length.
+    rcvd = read(sock, buf + offset, tbr - offset);
     if (rcvd > 0)
       offset += rcvd;
   }

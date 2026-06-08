@@ -47,6 +47,10 @@ class Server:
             self.listener()
 
     def connecter(self):  # AI module에 모델 생성을 요청하는 함수
+        # The control server creates the AI model before it accepts Edge data.
+        # It sends algorithm/dimension/index to the AI module so the AI module
+        # knows which model to build and which element of each feature vector is
+        # the prediction target.
         success = True
         self.ai = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.ai.connect((self.caddr, self.cport))
@@ -85,6 +89,8 @@ class Server:
         return success
 
     def listener(self):  # edge의 요청을 처리. 접속할 때까지 기다리는 함수임.
+        # listener() owns the server socket. It blocks at accept() until an Edge
+        # device connects, then delegates that client socket to handler().
         logging.info("[*] Server is listening on 0.0.0.0:{}".format(self.port))
 
         while True:
@@ -93,10 +99,14 @@ class Server:
                 "[*] Server accept the connection from {}:{}".format(info[0], info[1])
             )
 
+            # Handle each Edge connection in a separate thread so the listener
+            # can immediately return to accept() and wait for another client.
             client_handle = threading.Thread(target=self.handler, args=(client,))
             client_handle.start()
 
     # Modified 2026-06-03: TCP recv can return partial data, so read exactly size bytes.
+    # recv_exact() mirrors the C++ read/write loops: TCP does not preserve packet
+    # boundaries, so one recv() call may return only part of the expected payload.
     def recv_exact(self, client, size):
         data = b""
         while len(data) < size:
@@ -135,6 +145,7 @@ class Server:
             sys.exit(1)
 
     # edge에서 받은 데이터를 python 정수형 데이터로 변환해서 전달하는 함수.
+    # The byte order must match edge/byte_op.h: every 4-byte feature is Big Endian.
     # Modified 2026-06-03: decode 20-byte payload for [avg_power, max_temp, min_temp, avg_humid, month].
     def parse_data(self, buf, is_training):
         avg_power = int.from_bytes(buf[0:4], byteorder="big", signed=True)
@@ -150,6 +161,11 @@ class Server:
 
     # TODO: You should implement your own protocol in this function
     # The following implementation is just a simple example
+    # handler() is the server-side state machine for one Edge connection:
+    #   1. collect ntrain training instances from Edge and forward them to AI
+    #   2. request AI training and wait for completion
+    #   3. collect ntest testing instances and forward them to AI
+    #   4. request final prediction result and print accuracy
     # 가장 중요함. edge에서 받은 데이터를 바탕으로 traing과 testing의 흐름을 관리.
     def handler(self, client):
         logging.info("[*] Server starts to process the client's request")

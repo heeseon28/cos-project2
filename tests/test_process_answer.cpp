@@ -172,8 +172,8 @@ int main(int argc, char *argv[])
   p = buf;
   // Aggregation 결과를 네트워크 전송이 가능한 바이트 스트림 형태로 변환
   VAR_TO_MEM_2BYTES_BIG_ENDIAN(num, p);
-  tmp = (int)min_power;
-  // 계산된 Feature를 Big Endian 형식으로 직렬화하여 버퍼에 저장
+  tmp = (int)max_power;
+  // 문제 설명의 packet format이 maximum power를 요구하므로 max_power를 직렬화한다.
   VAR_TO_MEM_4BYTES_BIG_ENDIAN(tmp, p);
   tmp = (int)max_temp;
   VAR_TO_MEM_4BYTES_BIG_ENDIAN(tmp, p);
